@@ -1,0 +1,15 @@
+[submodule "sources/calico"]
+	path = sources/calico
+	url = https://github.com/AppMana/forks-calico-windows-ipv6.git
+[submodule "sources/containerd"]
+	path = sources/containerd
+	url = https://github.com/AppMana/containerd.git
+[submodule "sources/labcontainers"]
+	path = sources/labcontainers
+	url = https://github.com/AppMana/labcontainers.git
+[submodule "sources/kubernetes"]
+	path = sources/kubernetes
+	url = https://github.com/AppMana/forks-kubernetes-kube-proxy-windows-ipv6.git
+[submodule "sources/k0s"]
+	path = sources/k0s
+	url = https://github.com/k0sproject/k0s.git
