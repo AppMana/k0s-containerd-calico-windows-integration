@@ -53,7 +53,7 @@ func TestComponentCheckBoundaries(t *testing.T) {
 		t.Skip("set INTEGRATION_COMPONENT_TESTS=1 and initialize pinned submodules")
 	}
 	for _, tc := range []struct{ name, pkg, pattern string }{
-		{"calico", "./cni-plugin/pkg/plugin", "TestCheckPool|TestWorkloadEndpointIPsInEnabledPools|TestPodIPNetworksForCheck|TestKubernetesPodIPsInEnabledPools"},
+		{"calico", "./cni-plugin/pkg/plugin", "TestCheck|TestWorkloadEndpointIPsInEnabledPools|TestPodIPNetworksForCheck|TestKubernetesPodIPsInEnabledPools"},
 		{"containerd", "./internal/cri/server", "TestCheck|TestListPodSandbox.*Check|Test.*SandboxName|TestPodSandboxStatus"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

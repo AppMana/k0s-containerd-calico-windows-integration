@@ -1,0 +1,21 @@
+name: Component CHECK boundaries
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  boundaries:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --depth 1 sources/calico sources/containerd
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -v -timeout=22m .
+        env:
+          INTEGRATION_COMPONENT_TESTS: '1'
