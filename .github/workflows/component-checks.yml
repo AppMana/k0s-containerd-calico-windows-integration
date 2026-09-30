@@ -6,6 +6,19 @@ on:
 permissions:
   contents: read
 jobs:
+  k0s-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: git submodule update --init --depth 1 sources/k0s
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -v -run '^TestK0sSourceBundleReconstructsExactCommit$' .
+        env:
+          INTEGRATION_K0S_BASE_SOURCE: ${{ github.workspace }}/sources/k0s
   boundaries:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
