@@ -100,6 +100,9 @@ func runWindowsRuntimeUpgrade(t *testing.T, ctx context.Context, lab *client.Ses
 		}
 		return r
 	}
+	if err := windows.ConfigureUnattendedRecovery(ctx, node); err != nil {
+		t.Fatal(err)
+	}
 	if err := windows.EnsureFeatures(ctx, node, windows.FeatureOptions{Names: []string{"Containers"}, AllowReboot: true}); err != nil {
 		t.Fatal(err)
 	}

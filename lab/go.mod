@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29
-	github.com/appmana/labcontainers v0.2.0-alpha.2.0.20261001210818-b8dc560d45dc
+	github.com/appmana/labcontainers v0.2.0-alpha.2.0.20261001223040-5981e56cc45f
 	github.com/srl-labs/containerlab v0.79.0
 	google.golang.org/grpc v1.82.1
 	k8s.io/cri-api v0.36.2
