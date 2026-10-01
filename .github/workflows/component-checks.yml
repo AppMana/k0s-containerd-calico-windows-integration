@@ -6,6 +6,15 @@ on:
 permissions:
   contents: read
 jobs:
+  probe-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test -race ./cmd/... ./internal/... -count=1 -timeout=2m
   k0s-source:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
