@@ -17,6 +17,9 @@ import (
 //go:embed runtime_upgrade.ps1
 var runtimeUpgradeScript []byte
 
+//go:embed runtime_content_gc.ps1
+var runtimeContentGC []byte
+
 // Targeted diagnosis uses an explicitly selected retained lab, not another
 // bootstrap. The SDK owns reattachment, lifecycle and timed serial execution.
 func TestRetainedWindowsRuntimeScript(t *testing.T) {
@@ -109,5 +112,12 @@ func runWindowsRuntimeUpgrade(t *testing.T, ctx context.Context, lab *client.Ses
 	r := run("powershell.exe", "-NoProfile", "-NonInteractive", "-File", `C:\runtime_upgrade.ps1`)
 	if !strings.Contains(string(r.Stdout), "WINDOWS_RUNTIME_UPGRADE_COMPLETE") {
 		t.Fatal("upgrade assertions did not complete")
+	}
+	if err := node.Put(ctx, `C:\runtime-content-gc.ps1`, 0600, runtimeContentGC); err != nil {
+		t.Fatal(err)
+	}
+	control := run("powershell.exe", "-NoProfile", "-NonInteractive", "-File", `C:\runtime-content-gc.ps1`)
+	if !strings.Contains(string(control.Stdout), "SAME_VERSION_GC_CONTROL_COMPLETE") {
+		t.Fatal("same-runtime GC control did not complete")
 	}
 }

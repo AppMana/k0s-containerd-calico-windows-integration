@@ -23,8 +23,8 @@ foreach($kind in @('rooted','unreferenced')){
 Restart-Service containerd
 $ready=$false
 for($i=0;$i -lt 30;$i++){
-    & $ctr --timeout 3s version
-    if($LASTEXITCODE -eq 0){$ready=$true;break}
+    $probe=Start-Process $ctr -ArgumentList @('--timeout','3s','version') -RedirectStandardOutput 'C:\gc-ready.out' -RedirectStandardError 'C:\gc-ready.err' -Wait -PassThru
+    if($probe.ExitCode -eq 0){$ready=$true;break}
     Start-Sleep -Seconds 1
 }
 if(-not $ready){throw 'Same runtime restart failed'}
