@@ -17,6 +17,7 @@ jobs:
       - run: go test -race ./cmd/... ./internal/... -count=1 -timeout=2m
       # Compile the native SDK fixture; execution requires the isolated KVM host.
       - run: go -C lab test ./... -count=1
+      - run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go -C lab build -o "$RUNNER_TEMP/prefix-runtime.exe" ./cmd/prefix-runtime
   k0s-source:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

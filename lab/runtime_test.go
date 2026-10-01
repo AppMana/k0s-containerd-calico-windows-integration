@@ -2,27 +2,43 @@ package lab_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
+	_ "embed"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	labv1 "github.com/appmana/labcontainers/api/v1"
+	"github.com/appmana/labcontainers/pkg/artifact"
 	"github.com/appmana/labcontainers/pkg/client"
 	clab "github.com/appmana/labcontainers/pkg/containerlab"
 	"github.com/srl-labs/containerlab/core"
 	"github.com/srl-labs/containerlab/types"
 )
 
+//go:embed go.mod
+var qualificationModule string
+
 // This is native execution of component tests, NOT live CNI replacement or an
 // upgrade qualification. It needs no NIC, cluster, egress, or production secret.
 func TestWindowsRuntimeCandidate(t *testing.T) {
-	if os.Getenv("INTEGRATION_WINDOWS_RUNTIME") != "1" {
-		t.Skip("set INTEGRATION_WINDOWS_RUNTIME=1 and explicit pinned lab inputs")
+	qualifyWindowsRuntime(t, false)
+}
+
+func TestWindowsRuntimeUpgrade(t *testing.T) {
+	qualifyWindowsRuntime(t, true)
+}
+
+func qualifyWindowsRuntime(t *testing.T, upgrade bool) {
+	gate := "INTEGRATION_WINDOWS_RUNTIME"
+	if upgrade {
+		gate = "INTEGRATION_WINDOWS_UPGRADE"
+	}
+	if os.Getenv(gate) != "1" {
+		t.Skip("set " + gate + "=1 and explicit pinned lab inputs")
 	}
 	required := func(key string) string {
 		t.Helper()
@@ -37,28 +53,40 @@ func TestWindowsRuntimeCandidate(t *testing.T) {
 	state := required("LABCONTAINERS_STATE_DIR")
 	media := required("INTEGRATION_RUNTIME_MEDIA")
 	digest := required("INTEGRATION_RUNTIME_MEDIA_SHA256")
-	version := required("INTEGRATION_RUNTIME_VERSION")
-	revision := required("INTEGRATION_RUNTIME_REVISION")
+	var failureRetention time.Duration
+	if value := os.Getenv("LABCONTAINERS_FAILURE_RETAIN_FOR"); value != "" {
+		var err error
+		failureRetention, err = time.ParseDuration(value)
+		if err != nil || failureRetention <= 0 || failureRetention > 24*time.Hour {
+			t.Fatal("LABCONTAINERS_FAILURE_RETAIN_FOR must be positive and at most 24h")
+		}
+	}
+	var version, revision string
+	if !upgrade {
+		version = required("INTEGRATION_RUNTIME_VERSION")
+		revision = required("INTEGRATION_RUNTIME_REVISION")
+	}
 	if !filepath.IsAbs(state) || !filepath.IsAbs(media) || !filepath.IsAbs(daemon) {
 		t.Fatal("durable absolute state, media, and daemon paths required")
 	}
-	data, err := os.ReadFile(media)
+	_, err := artifact.ReadFile(context.Background(), media, digest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fmt.Sprintf("%x", sha256.Sum256(data)) != digest {
-		t.Fatal("media digest mismatch")
+	// Derive the source pin from the dependency, not a second handwritten hash.
+	pin := regexp.MustCompile(`(?m)^\s*github.com/appmana/labcontainers\s+\S+-([0-9a-f]{12})\s*$`).FindStringSubmatch(qualificationModule)
+	if len(pin) != 2 {
+		t.Fatal("qualification requires a source-pinned Labcontainers SDK")
 	}
-	// Binary build metadata must match the SDK used by this module.
 	metadata, err := exec.Command("go", "version", "-m", daemon).CombinedOutput()
-	if err != nil || (!strings.Contains(string(metadata), "beb4a55a73bd") && !strings.Contains(string(metadata), "vcs.revision=beb4a55a73bdb2529e0ec4771d191c607c1e8988")) {
+	if err != nil || (!strings.Contains(string(metadata), "-"+pin[1]) && !strings.Contains(string(metadata), "vcs.revision="+pin[1])) {
 		t.Fatalf("daemon does not attest the pinned SDK source: %s: %v", metadata, err)
 	}
 	if strings.Contains(string(metadata), "vcs.modified=true") {
 		t.Fatal("dirty daemon source is not the pinned SDK build")
 	}
 	imageRevision, err := exec.Command("docker", "image", "inspect", image, "--format", `{{index .Config.Labels "appmana.labcontainers.revision"}}`).CombinedOutput()
-	if err != nil || strings.TrimSpace(string(imageRevision)) != "beb4a55a73bdb2529e0ec4771d191c607c1e8988" {
+	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(imageRevision)), pin[1]) {
 		t.Fatalf("Windows image helper must match SDK/daemon: %s: %v", imageRevision, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -87,13 +115,34 @@ func TestWindowsRuntimeCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("retained artifacts: %s", lab.Artifacts())
-	// No Keep: Close destroys only this owned lab, on success and failure.
+	// Successful runs are destroyed. Explicit failure retention preserves the
+	// owned disk for diagnosis without leaving a VM running or creating a new lab.
+	defer func() {
+		if !t.Failed() || failureRetention == 0 {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := lab.Node("windows").PowerOff(cleanupCtx); err != nil {
+			t.Errorf("power off failed VM: %v", err)
+			return // Close still destroys it; never retain a running failed VM.
+		}
+		if err := lab.Keep(cleanupCtx, failureRetention); err != nil {
+			t.Errorf("retain failed VM: %v", err)
+			return
+		}
+		t.Logf("failed VM retained powered off: session=%s socket=%s state=%s ttl=%s", lab.ID(), c.Socket(), c.StateDirectory(), failureRetention)
+	}()
 	_, err = lab.RunTimeline(ctx, &labv1.TimelineAction{Action: &labv1.TimelineAction_WaitExec{WaitExec: &labv1.WaitExec{
 		Exec:          &labv1.ExecRequest{Node: &labv1.NodeRef{Node: "windows"}, Argv: []string{"cmd.exe", "/c", "ver"}, TimeoutMillis: 10000},
 		TimeoutMillis: 600000, RetryMillis: 2000, StdoutContains: []byte("Windows"),
 	}}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if upgrade {
+		runWindowsRuntimeUpgrade(t, ctx, lab)
+		return
 	}
 	// Inputs are data, not PowerShell source. Restrict version/revision before
 	// inserting them into the single-quoted expected-output assertions.
@@ -113,7 +162,7 @@ if(-not $v.Contains('` + version + `') -or -not $v.Contains('` + revision + `'))
 $testArgs=@('-test.v','-test.run','TestCheck|TestListPodSandbox.*Check|Test.*SandboxName|TestPodSandboxStatus','-test.timeout','5m');
 & .\cri-server.test.exe @testArgs;
 if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; Write-Output 'WINDOWS_RUNTIME_COMPONENTS_COMPLETE'`
-	result, err := c.RPC().Exec(ctx, &labv1.ExecRequest{Node: lab.Node("windows").Ref(), Argv: []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script}, TimeoutMillis: int64((6 * time.Minute) / time.Millisecond)})
+	result, err := lab.Node("windows").ExecWithTimeout(ctx, 6*time.Minute, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 	if err != nil {
 		t.Fatal(err)
 	}
