@@ -18,6 +18,8 @@ jobs:
       # Compile the native SDK fixture; execution requires the isolated KVM host.
       - run: go -C lab test ./... -count=1
       - run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go -C lab build -o "$RUNNER_TEMP/prefix-runtime.exe" ./cmd/prefix-runtime
+      - run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/prefix-workload.exe" ./cmd/prefix-workload
+      - run: CGO_ENABLED=0 go -C lab build -o "$RUNNER_TEMP/prefix-scenario" ./cmd/prefix-scenario
   k0s-source:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
