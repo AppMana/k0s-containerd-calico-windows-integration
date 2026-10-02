@@ -76,6 +76,25 @@ func TestLiveWAN(t *testing.T) {
 	t.Log(out)
 }
 
+func TestLiveVyOSWAN(t *testing.T) {
+	if os.Getenv("INTEGRATION_LIVE_VYOS_WAN") != "1" {
+		t.Skip("explicit real VyOS mixed-VM WAN qualification required")
+	}
+	for _, key := range []string{"LABCONTAINERS_VYOS_IMAGE", "LABCONTAINERS_WAN_IMAGE", "LABCONTAINERS_CALICO_MEDIA", "LABCONTAINERS_CALICO_MEDIA_SHA256"} {
+		if os.Getenv(key) == "" {
+			t.Fatalf("%s required; Linux gateway-only fallback is not VyOS qualification", key)
+		}
+	}
+	if os.Getenv("LABCONTAINERS_KUBERNETES_CNI") != "calico-bgp" {
+		t.Fatal("VyOS qualification requires calico-bgp")
+	}
+	out := command(t, filepath.Join(source(t, "calico"), "hack", "appmana", "lab"), 87*time.Minute, "go", "test", "-v", "-count=1", "-run", "^TestLiveK0sWindowsWAN$", "-timeout=85m", ".")
+	if !strings.Contains(out, "--- PASS: TestLiveK0sWindowsWAN") || !strings.Contains(out, "VYOS_BGP_WAN_COMPLETE") {
+		t.Fatal("real VyOS BGP/WAN qualification did not complete")
+	}
+	t.Log(out)
+}
+
 func TestLivePrefixReplacement(t *testing.T) {
 	if os.Getenv("INTEGRATION_LIVE_PREFIX_REPLACEMENT") != "1" {
 		t.Skip("explicit isolated mixed-VM prefix qualification required")
