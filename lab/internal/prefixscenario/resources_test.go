@@ -1,12 +1,30 @@
 package prefixscenario
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+func TestRuntimeObserverSurvivesExecStreamAndCannotRestartSilently(t *testing.T) {
+	p := RuntimeObserver("test", "pinned-image", `C:\LabPrefix\test`, "target-uid")
+	if p.Spec.NodeName != "windows" || !p.Spec.HostNetwork || !*p.Spec.SecurityContext.WindowsOptions.HostProcess {
+		t.Fatal("observer must sample host CRI outside the ordinary pod-network fault domain")
+	}
+	if p.Spec.RestartPolicy != core.RestartPolicyNever || *p.Spec.AutomountServiceAccountToken {
+		t.Fatal("observer must not restart silently or need API credentials")
+	}
+	c := p.Spec.Containers[0]
+	if c.ImagePullPolicy != core.PullNever || len(c.Command) != 1 || c.Command[0] != `C:\LabPrefix\test\bin\prefix-runtime.exe` {
+		t.Fatal("kubelet must own the bounded native observer, not an exec/shell background job")
+	}
+	if !reflect.DeepEqual(c.Args, []string{"--pod-uid", "target-uid", "--watch", `C:\LabPrefix\test\runtime.jsonl`, "--duration", "20m"}) {
+		t.Fatal("observer identity, durable evidence path, or lifetime changed")
+	}
+}
 
 func TestReplacementWorkloadCannotReseedLostDataOrPinOldPool(t *testing.T) {
 	p := WindowsWorkload("qualification", "target", "image@sha256:"+strings.Repeat("a", 64), `C:\LabPrefix`, "")

@@ -302,22 +302,32 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 		return err
 	}
 	// Observe native CRI continuously so short-lived old exit records survive GC.
-	// Keep the foreground remote exec owned by this Go context. PowerShell
-	// Start-Process inside HostProcess exec can keep its parent exec open even
-	// with redirected streams; it is not a reliable detached-job API.
-	observerCtx, stopObserver := context.WithCancel(ctx)
-	defer stopObserver()
-	observerDone := make(chan struct{})
-	var observerErr error
-	go func() {
-		_, observerErr = s.host(observerCtx, `& '`+s.root+`\bin\prefix-runtime.exe' --pod-uid '`+current.PodUID+`' --watch '`+s.root+`\runtime.jsonl' --duration '20m'; exit $LASTEXITCODE`)
-		close(observerDone)
+	// A Kubernetes-owned HostProcess remains alive when network reconciliation
+	// interrupts kubectl exec streams. It writes only local, fsynced evidence.
+	observer, err := s.k.CoreV1().Pods(s.namespace).Create(ctx, prefixscenario.RuntimeObserver(s.namespace, image, s.root, current.PodUID), meta.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if e := s.k.CoreV1().Pods(s.namespace).Delete(cleanup, observer.Name, meta.DeleteOptions{Preconditions: &meta.Preconditions{UID: &observer.UID}}); e != nil {
+			fmt.Fprintln(os.Stderr, "observer cleanup:", e)
+		}
 	}()
-	err = wait(ctx, 20*time.Second, func(ctx context.Context) error {
-		select {
-		case <-observerDone:
-			return fmt.Errorf("observer exited before fault injection: %v", observerErr)
-		default:
+	observerRunning := func(ctx context.Context) error {
+		pod, e := s.k.CoreV1().Pods(s.namespace).Get(ctx, observer.Name, meta.GetOptions{})
+		if e != nil {
+			return e
+		}
+		if pod.UID != observer.UID || pod.Status.Phase != core.PodRunning || len(pod.Status.ContainerStatuses) != 1 || pod.Status.ContainerStatuses[0].State.Running == nil || pod.Status.ContainerStatuses[0].RestartCount != 0 {
+			return fmt.Errorf("observer is not the original running process: %+v", pod.Status)
+		}
+		return nil
+	}
+	err = wait(ctx, time.Minute, func(ctx context.Context) error {
+		if e := observerRunning(ctx); e != nil {
+			return e
 		}
 		_, e := s.host(ctx, `$entry=Get-Content -LiteralPath '`+s.root+`\runtime.jsonl' -TotalCount 1 | ConvertFrom-Json; if(!$entry.snapshot -or $entry.error){throw 'observer has not recorded a successful CRI snapshot'}`)
 		return e
@@ -326,10 +336,8 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 		return err
 	}
 	for round := 1; round <= 3; round++ {
-		select {
-		case <-observerDone:
-			return fmt.Errorf("observer exited during qualification: %v", observerErr)
-		default:
+		if err := observerRunning(ctx); err != nil {
+			return err
 		}
 		nextPrefix := fmt.Sprintf("2001:db8:100:%x::/64", round+1)
 		if err = s.pool(ctx, fmt.Sprintf("%s-%d", s.namespace, round), nextPrefix, selector, false, false); err != nil {
@@ -400,7 +408,7 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 		fmt.Printf("rotation %d: %s -> %s; original data and stable control retained\n", round, current.IPv6, after.IPv6)
 		current = after
 	}
-	return nil
+	return observerRunning(ctx)
 }
 
 func (s *scenario) shutdown(ctx context.Context, before observed) (prefixcheck.Shutdown, []byte, error) {

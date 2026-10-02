@@ -11,6 +11,25 @@ import (
 	"path/filepath"
 )
 
+// RuntimeObserver is owned by kubelet, not a long-lived kubectl exec stream.
+// Its local CRI/named-pipe sampling must survive the network fault it observes.
+func RuntimeObserver(namespace, image, root, podUID string) *core.Pod {
+	hostProcess, automount, grace := true, false, int64(5)
+	user := `NT AUTHORITY\SYSTEM`
+	return &core.Pod{
+		ObjectMeta: meta.ObjectMeta{Name: "runtime-observer", Namespace: namespace},
+		Spec: core.PodSpec{
+			NodeName: "windows", HostNetwork: true, RestartPolicy: core.RestartPolicyNever,
+			AutomountServiceAccountToken: &automount, TerminationGracePeriodSeconds: &grace,
+			SecurityContext: &core.PodSecurityContext{WindowsOptions: &core.WindowsSecurityContextOptions{HostProcess: &hostProcess, RunAsUserName: &user}},
+			Containers: []core.Container{{Name: "observer", Image: image, ImagePullPolicy: core.PullNever,
+				Command: []string{root + `\bin\prefix-runtime.exe`},
+				Args:    []string{"--pod-uid", podUID, "--watch", root + `\runtime.jsonl`, "--duration", "20m"},
+			}},
+		},
+	}
+}
+
 // LinuxControl lives outside the Windows node's shared L2Bridge fault domain.
 // A second IPv6 pool on that same Windows network is not an unaffected control.
 func LinuxControl(namespace, image, root string) *core.Pod {
