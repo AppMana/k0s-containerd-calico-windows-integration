@@ -8,7 +8,22 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"path/filepath"
 )
+
+// LinuxControl lives outside the Windows node's shared L2Bridge fault domain.
+// A second IPv6 pool on that same Windows network is not an unaffected control.
+func LinuxControl(namespace, image, root string) *core.Pod {
+	p := WindowsWorkload(namespace, "control", image, root, "")
+	p.Spec.NodeName = "linux"
+	p.Spec.Containers[0].Command = []string{"/tools/prefix-workload"}
+	p.Spec.Containers[0].Args = []string{"--state-dir", "/state", "--listen", ":8080", "--drain", "5s"}
+	p.Spec.Containers[0].VolumeMounts[0].MountPath = "/state"
+	p.Spec.Containers[0].VolumeMounts[1].MountPath = "/tools"
+	p.Spec.Volumes[0].HostPath.Path = filepath.Join(root, "control")
+	p.Spec.Volumes[1].HostPath.Path = filepath.Join(root, "bin")
+	return p
+}
 
 // WindowsWorkload mounts already-created data. DirectoryOrCreate would hide a
 // lost host directory after replacement, so only Directory is permitted here.

@@ -5,9 +5,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -60,6 +62,7 @@ type scenario struct {
 	k                                           *kubernetes.Clientset
 	d                                           dynamic.Interface
 	namespace, root, hostPod, version, evidence string
+	linuxImage, linuxProbe                      string
 	http                                        *http.Client
 }
 
@@ -132,14 +135,6 @@ func (s *scenario) observe(ctx context.Context, name string) (observed, error) {
 	if !result.Ready || result.IPv6 == "" {
 		return result, fmt.Errorf("%s not ready dual-stack: %+v", name, p.Status)
 	}
-	body, err := s.host(ctx, `& '`+s.root+`\bin\prefix-runtime.exe' --pod-uid '`+result.PodUID+`'; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}`)
-	if err != nil {
-		return result, err
-	}
-	var snap runtimeSnapshot
-	if err = json.Unmarshal(body, &snap); err != nil {
-		return result, err
-	}
 	for _, c := range p.Status.ContainerStatuses {
 		if c.Name == "probe" && c.Ready {
 			result.ContainerID = strings.TrimPrefix(c.ContainerID, "containerd://")
@@ -148,9 +143,19 @@ func (s *scenario) observe(ctx context.Context, name string) (observed, error) {
 	if result.ContainerID == "" {
 		return result, fmt.Errorf("no ready CRI identity for %s", name)
 	}
-	result.SandboxID, err = readySandbox(snap, result.PodUID, s.version, result.ContainerID, result.IPv6)
-	if err != nil {
-		return result, err
+	if p.Spec.NodeName == "windows" {
+		body, err := s.host(ctx, `& '`+s.root+`\bin\prefix-runtime.exe' --pod-uid '`+result.PodUID+`'; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}`)
+		if err != nil {
+			return result, err
+		}
+		var snap runtimeSnapshot
+		if err = json.Unmarshal(body, &snap); err != nil {
+			return result, err
+		}
+		result.SandboxID, err = readySandbox(snap, result.PodUID, s.version, result.ContainerID, result.IPv6)
+		if err != nil {
+			return result, err
+		}
 	}
 	req, _ := http.NewRequestWithContext(ctx, "GET", "http://"+net.JoinHostPort(result.IPv6, "8080")+"/", nil)
 	resp, err := s.http.Do(req)
@@ -233,6 +238,12 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 		return fmt.Errorf("expected one Windows Calico HostProcess")
 	}
 	s.hostPod = hosts.Items[0].Name
+	// Seed the Linux control once; never place a second IPv6 pool on the
+	// Windows single-network node. The portable probe refuses to reseed.
+	linuxRoot := filepath.Join(s.evidence, "linux")
+	if err = seedLinuxControl(linuxRoot, s.linuxProbe); err != nil {
+		return err
+	}
 	_, err = s.k.CoreV1().Namespaces().Create(ctx, &core.Namespace{ObjectMeta: meta.ObjectMeta{Name: s.namespace}}, meta.CreateOptions{})
 	if err != nil {
 		return err
@@ -243,9 +254,6 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 		return err
 	}
 	selector := "kubernetes.io/hostname == 'windows'"
-	if err = s.pool(ctx, s.namespace+"-control", "2001:db8:100:80::/64", selector, false, true); err != nil {
-		return err
-	}
 	if err = s.pool(ctx, s.namespace+"-linux", "2001:db8:100:90::/64", "kubernetes.io/hostname == 'linux'", false, false); err != nil {
 		return err
 	}
@@ -268,12 +276,11 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 			}
 		}
 	}
-	for _, name := range []string{"target", "control"} {
-		pool := ""
-		if name == "control" {
-			pool = s.namespace + "-control"
-		}
-		if _, err = s.k.CoreV1().Pods(s.namespace).Create(ctx, prefixscenario.WindowsWorkload(s.namespace, name, image, s.root, pool), meta.CreateOptions{}); err != nil {
+	for _, pod := range []*core.Pod{
+		prefixscenario.WindowsWorkload(s.namespace, "target", image, s.root, ""),
+		prefixscenario.LinuxControl(s.namespace, s.linuxImage, linuxRoot),
+	} {
+		if _, err = s.k.CoreV1().Pods(s.namespace).Create(ctx, pod, meta.CreateOptions{}); err != nil {
 			return err
 		}
 	}
@@ -405,9 +412,11 @@ func (s *scenario) shutdown(ctx context.Context, before observed) (prefixcheck.S
 
 func run() error {
 	image := flag.String("windows-image", "", "exact preloaded ordinary Windows image")
+	linuxImage := flag.String("linux-image", "", "exact preloaded ordinary Linux image")
+	linuxProbe := flag.String("linux-probe", "/mnt/qualification/prefix-workload", "already staged portable Linux workload executable")
 	version := flag.String("runtime-version", "", "expected CRI runtime version")
 	flag.Parse()
-	if !strings.Contains(*image, "@sha256:") || *version == "" {
+	if !strings.Contains(*image, "@sha256:") || !strings.Contains(*linuxImage, "@sha256:") || *version == "" {
 		return fmt.Errorf("explicit pinned image and runtime version required")
 	}
 	config, err := clientcmd.BuildConfigFromFlags("", "/var/lib/k0s/pki/admin.conf")
@@ -428,7 +437,7 @@ func run() error {
 	if err = os.Mkdir(dir, 0700); err != nil {
 		return err
 	}
-	s := &scenario{k: k, d: d, namespace: id, root: `C:\LabPrefix\` + id, version: *version, evidence: dir, http: &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}}
+	s := &scenario{k: k, d: d, namespace: id, root: `C:\LabPrefix\` + id, version: *version, evidence: dir, linuxImage: *linuxImage, linuxProbe: *linuxProbe, http: &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	fmt.Println("prefix evidence:", dir)
@@ -436,6 +445,47 @@ func run() error {
 		return err
 	}
 	fmt.Println("PREFIX_ROTATION_COMPLETE")
+	return nil
+}
+
+func seedLinuxControl(root, probe string) error {
+	if err := os.Mkdir(root, 0700); err != nil {
+		return err
+	}
+	for _, sub := range []string{"bin", "control"} {
+		if err := os.Mkdir(filepath.Join(root, sub), 0700); err != nil {
+			return err
+		}
+	}
+	in, err := os.Open(probe)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	for _, file := range []struct {
+		path   string
+		mode   os.FileMode
+		source io.Reader
+	}{
+		{filepath.Join(root, "bin", "prefix-workload"), 0755, in},
+		{filepath.Join(root, "control", "payload.bin"), 0600, io.LimitReader(rand.Reader, 32768)},
+	} {
+		out, err := os.OpenFile(file.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, file.mode)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(out, file.source)
+		if err == nil {
+			err = out.Sync()
+		}
+		closeErr := out.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
 	return nil
 }
 func main() {

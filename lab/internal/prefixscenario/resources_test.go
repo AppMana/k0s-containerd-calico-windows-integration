@@ -46,3 +46,18 @@ func TestStablePoolCannotAuthorizeAutomaticReplacement(t *testing.T) {
 		t.Fatal("control did not explicitly select the manual pool")
 	}
 }
+
+func TestStableControlIsOutsideWindowsSharedNetwork(t *testing.T) {
+	p := LinuxControl("qualification", "image", "/var/tmp/prefix-test")
+	if p.Spec.NodeName != "linux" || p.Spec.HostNetwork {
+		t.Fatal("control must be an ordinary Linux pod outside the Windows shared-network fault domain")
+	}
+	if p.Annotations["cni.projectcalico.org/ipv6pools"] != "" || p.Spec.Containers[0].Command[0] != "/tools/prefix-workload" {
+		t.Fatal("control must use Linux IPAM and the real portable workload")
+	}
+	for _, v := range p.Spec.Volumes {
+		if v.HostPath == nil || *v.HostPath.Type != core.HostPathDirectory || !strings.HasPrefix(v.HostPath.Path, "/var/tmp/prefix-test/") {
+			t.Fatal("control must mount existing Linux payload and tools without reseeding")
+		}
+	}
+}
