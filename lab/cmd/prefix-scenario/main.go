@@ -203,7 +203,7 @@ func (s *scenario) disable(ctx context.Context, name string) error {
 	return err
 }
 
-func (s *scenario) execute(ctx context.Context, image string) error {
+func (s *scenario) connect(ctx context.Context) error {
 	// This consumer is deliberately not usable against an arbitrary cluster.
 	nodes, err := s.k.CoreV1().Nodes().List(ctx, meta.ListOptions{})
 	if err != nil {
@@ -238,6 +238,14 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 		return fmt.Errorf("expected one Windows Calico HostProcess")
 	}
 	s.hostPod = hosts.Items[0].Name
+	return nil
+}
+
+func (s *scenario) execute(ctx context.Context, image string) error {
+	if err := s.connect(ctx); err != nil {
+		return err
+	}
+	var err error
 	// Seed the Linux control once; never place a second IPv6 pool on the
 	// Windows single-network node. The portable probe refuses to reseed.
 	linuxRoot := filepath.Join(s.evidence, "linux")
@@ -447,8 +455,9 @@ func run() error {
 	linuxImage := flag.String("linux-image", "", "exact preloaded ordinary Linux image")
 	linuxProbe := flag.String("linux-probe", "/mnt/qualification/prefix-workload", "already staged portable Linux workload executable")
 	version := flag.String("runtime-version", "", "expected CRI runtime version")
+	verify := flag.String("verify-namespace", "", "read back an existing completed prefix qualification without writes")
 	flag.Parse()
-	if !strings.Contains(*image, "@sha256:") || !strings.Contains(*linuxImage, "@sha256:") || *version == "" {
+	if *version == "" || (*verify == "" && (!strings.Contains(*image, "@sha256:") || !strings.Contains(*linuxImage, "@sha256:"))) {
 		return fmt.Errorf("explicit pinned image and runtime version required")
 	}
 	config, err := clientcmd.BuildConfigFromFlags("", "/var/lib/k0s/pki/admin.conf")
@@ -465,18 +474,35 @@ func run() error {
 		return err
 	}
 	id := fmt.Sprintf("prefix-%d", time.Now().Unix())
+	if *verify != "" {
+		id = *verify
+	}
 	dir := filepath.Join("/var/tmp", id)
-	if err = os.Mkdir(dir, 0700); err != nil {
-		return err
+	if *verify == "" {
+		if err = os.Mkdir(dir, 0700); err != nil {
+			return err
+		}
 	}
 	s := &scenario{k: k, d: d, namespace: id, root: `C:\LabPrefix\` + id, version: *version, evidence: dir, linuxImage: *linuxImage, linuxProbe: *linuxProbe, http: &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
+	if *verify != "" {
+		if err := s.readback(ctx); err != nil {
+			return err
+		}
+		fmt.Println("PREFIX_READBACK_COMPLETE")
+		return nil
+	}
 	fmt.Println("prefix evidence:", dir)
 	if err = s.execute(ctx, *image); err != nil {
 		return err
 	}
 	fmt.Println("PREFIX_ROTATION_COMPLETE")
+	plan, err := json.Marshal(map[string]any{"args": []string{"--verify-namespace=" + id, "--runtime-version=" + *version}, "success": "PREFIX_READBACK_COMPLETE"})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("KUBERNETES_CRASH_VERIFY=%s\n", plan)
 	return nil
 }
 
