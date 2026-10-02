@@ -302,13 +302,35 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 		return err
 	}
 	// Observe native CRI continuously so short-lived old exit records survive GC.
-	startCtx, stopStart := context.WithTimeout(ctx, 20*time.Second)
-	_, err = s.host(startCtx, `$p=Start-Process -FilePath '`+s.root+`\bin\prefix-runtime.exe' -ArgumentList @('--pod-uid','`+current.PodUID+`','--watch','`+s.root+`\runtime.jsonl','--duration','20m') -PassThru -RedirectStandardOutput '`+s.root+`\observer-output.log' -RedirectStandardError '`+s.root+`\observer-error.log'; $p.Id`)
-	stopStart()
+	// Keep the foreground remote exec owned by this Go context. PowerShell
+	// Start-Process inside HostProcess exec can keep its parent exec open even
+	// with redirected streams; it is not a reliable detached-job API.
+	observerCtx, stopObserver := context.WithCancel(ctx)
+	defer stopObserver()
+	observerDone := make(chan struct{})
+	var observerErr error
+	go func() {
+		_, observerErr = s.host(observerCtx, `& '`+s.root+`\bin\prefix-runtime.exe' --pod-uid '`+current.PodUID+`' --watch '`+s.root+`\runtime.jsonl' --duration '20m'; exit $LASTEXITCODE`)
+		close(observerDone)
+	}()
+	err = wait(ctx, 20*time.Second, func(ctx context.Context) error {
+		select {
+		case <-observerDone:
+			return fmt.Errorf("observer exited before fault injection: %v", observerErr)
+		default:
+		}
+		_, e := s.host(ctx, `$entry=Get-Content -LiteralPath '`+s.root+`\runtime.jsonl' -TotalCount 1 | ConvertFrom-Json; if(!$entry.snapshot -or $entry.error){throw 'observer has not recorded a successful CRI snapshot'}`)
+		return e
+	})
 	if err != nil {
 		return err
 	}
 	for round := 1; round <= 3; round++ {
+		select {
+		case <-observerDone:
+			return fmt.Errorf("observer exited during qualification: %v", observerErr)
+		default:
+		}
 		nextPrefix := fmt.Sprintf("2001:db8:100:%x::/64", round+1)
 		if err = s.pool(ctx, fmt.Sprintf("%s-%d", s.namespace, round), nextPrefix, selector, false, false); err != nil {
 			return err
