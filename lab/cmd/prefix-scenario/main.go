@@ -302,7 +302,9 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 		return err
 	}
 	// Observe native CRI continuously so short-lived old exit records survive GC.
-	_, err = s.host(ctx, `$p=Start-Process -FilePath '`+s.root+`\bin\prefix-runtime.exe' -ArgumentList @('--pod-uid','`+current.PodUID+`','--watch','`+s.root+`\runtime.jsonl','--duration','20m') -PassThru -RedirectStandardError '`+s.root+`\observer-error.log'; $p.Id`)
+	startCtx, stopStart := context.WithTimeout(ctx, 20*time.Second)
+	_, err = s.host(startCtx, `$p=Start-Process -FilePath '`+s.root+`\bin\prefix-runtime.exe' -ArgumentList @('--pod-uid','`+current.PodUID+`','--watch','`+s.root+`\runtime.jsonl','--duration','20m') -PassThru -RedirectStandardOutput '`+s.root+`\observer-output.log' -RedirectStandardError '`+s.root+`\observer-error.log'; $p.Id`)
+	stopStart()
 	if err != nil {
 		return err
 	}
