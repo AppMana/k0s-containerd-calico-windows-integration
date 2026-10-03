@@ -6,6 +6,18 @@ on:
 permissions:
   contents: read
 jobs:
+  runtime-upgrade-contracts:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test protected runtime upgrade lifecycle
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -RequiredVersion 5.7.1
+          Invoke-Pester -Path lab/runtime_workload_upgrade.Tests.ps1 -Output Detailed -CI
   probe-contracts:
     runs-on: ubuntu-24.04
     steps:
