@@ -64,6 +64,7 @@ type scenario struct {
 	namespace, root, hostPod, version, evidence string
 	linuxImage, linuxProbe                      string
 	http                                        *http.Client
+	prepareUpgrade                              bool
 }
 
 func (s *scenario) host(ctx context.Context, script string) ([]byte, error) {
@@ -322,9 +323,12 @@ func (s *scenario) execute(ctx context.Context, image string) error {
 	if err != nil {
 		return err
 	}
-	initial, _ := json.Marshal(map[string]any{"target": current, "control": control})
+	initial, _ := json.Marshal(upgradeBaseline{RuntimeVersion: s.version, Target: current, Control: control})
 	if err = s.evidenceFile("baseline.json", initial); err != nil {
 		return err
+	}
+	if s.prepareUpgrade {
+		return nil
 	}
 	// Observe native CRI continuously so short-lived old exit records survive GC.
 	// A Kubernetes-owned HostProcess remains alive when network reconciliation
@@ -473,8 +477,13 @@ func run() error {
 	linuxProbe := flag.String("linux-probe", "/mnt/qualification/prefix-workload", "already staged portable Linux workload executable")
 	version := flag.String("runtime-version", "", "expected CRI runtime version")
 	verify := flag.String("verify-namespace", "", "read back an existing completed prefix qualification without writes")
+	prepareUpgrade := flag.Bool("prepare-runtime-upgrade", false, "seed and observe workloads on the baseline runtime, without prefix rotations")
+	verifyUpgrade := flag.String("verify-runtime-upgrade", "", "read-only verification of existing workloads after a forward runtime upgrade")
 	flag.Parse()
-	if *version == "" || (*verify == "" && (!strings.Contains(*image, "@sha256:") || !strings.Contains(*linuxImage, "@sha256:"))) {
+	if (*verify != "" && *verifyUpgrade != "") || (*prepareUpgrade && (*verify != "" || *verifyUpgrade != "")) {
+		return fmt.Errorf("choose exactly one qualification mode")
+	}
+	if *version == "" || (*verify == "" && *verifyUpgrade == "" && (!strings.Contains(*image, "@sha256:") || !strings.Contains(*linuxImage, "@sha256:"))) {
 		return fmt.Errorf("explicit pinned image and runtime version required")
 	}
 	config, err := clientcmd.BuildConfigFromFlags("", "/var/lib/k0s/pki/admin.conf")
@@ -494,15 +503,26 @@ func run() error {
 	if *verify != "" {
 		id = *verify
 	}
+	if *verifyUpgrade != "" {
+		id = *verifyUpgrade
+	}
 	dir := filepath.Join("/var/tmp", id)
-	if *verify == "" {
+	if *verify == "" && *verifyUpgrade == "" {
 		if err = os.Mkdir(dir, 0700); err != nil {
 			return err
 		}
 	}
 	s := &scenario{k: k, d: d, namespace: id, root: `C:\LabPrefix\` + id, version: *version, evidence: dir, linuxImage: *linuxImage, linuxProbe: *linuxProbe, http: &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}}
+	s.prepareUpgrade = *prepareUpgrade
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
+	if *verifyUpgrade != "" {
+		if err := s.upgradeReadback(ctx); err != nil {
+			return err
+		}
+		fmt.Println("RUNTIME_WORKLOAD_UPGRADE_COMPLETE")
+		return nil
+	}
 	if *verify != "" {
 		if err := s.readback(ctx); err != nil {
 			return err
@@ -513,6 +533,10 @@ func run() error {
 	fmt.Println("prefix evidence:", dir)
 	if err = s.execute(ctx, *image); err != nil {
 		return err
+	}
+	if *prepareUpgrade {
+		fmt.Printf("RUNTIME_WORKLOAD_BASELINE_COMPLETE namespace=%s runtime=%s\n", id, s.version)
+		return nil
 	}
 	fmt.Println("PREFIX_ROTATION_COMPLETE")
 	plan, err := json.Marshal(map[string]any{"args": []string{"--verify-namespace=" + id, "--runtime-version=" + *version}, "success": "PREFIX_READBACK_COMPLETE"})
