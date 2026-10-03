@@ -97,13 +97,30 @@ func (s *scenario) evidenceFile(name string, data []byte) error {
 }
 
 func wait(ctx context.Context, duration time.Duration, check func(context.Context) error) error {
+	return waitWithDiagnostics(ctx, duration, check, os.Stderr)
+}
+
+func waitWithDiagnostics(ctx context.Context, duration time.Duration, check func(context.Context) error, output io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, duration)
 	defer cancel()
 	var last error
-	for {
+	for attempt := 1; ; attempt++ {
 		call, done := context.WithTimeout(ctx, 15*time.Second)
+		started := time.Now()
 		last = check(call)
 		done()
+		entry := struct {
+			Time          string `json:"time"`
+			Attempt       int    `json:"attempt"`
+			ElapsedMillis int64  `json:"elapsedMillis"`
+			Error         string `json:"error,omitempty"`
+		}{Time: started.UTC().Format(time.RFC3339Nano), Attempt: attempt, ElapsedMillis: time.Since(started).Milliseconds()}
+		if last != nil {
+			entry.Error = last.Error()
+		}
+		// Retain every observation, including transient failures before the
+		// final deadline. Logging must not alter retries or acceptance.
+		_ = json.NewEncoder(output).Encode(entry)
 		if last == nil {
 			return nil
 		}
