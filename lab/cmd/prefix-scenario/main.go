@@ -535,7 +535,8 @@ func run() error {
 		return err
 	}
 	if *prepareUpgrade {
-		fmt.Printf("RUNTIME_WORKLOAD_BASELINE_COMPLETE namespace=%s runtime=%s\n", id, s.version)
+		fmt.Printf("runtime upgrade baseline: namespace=%s runtime=%s\n", id, s.version)
+		fmt.Println("RUNTIME_WORKLOAD_BASELINE_COMPLETE")
 		return nil
 	}
 	fmt.Println("PREFIX_ROTATION_COMPLETE")
